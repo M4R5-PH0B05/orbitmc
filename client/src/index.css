@@ -1,0 +1,160 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* OrbitMC — deep space palette: void black, nebula purple accent, pulsar green for online */
+    --background: 230 20% 6%;
+    --foreground: 220 15% 88%;
+
+    --card: 230 20% 9%;
+    --card-foreground: 220 15% 88%;
+
+    --popover: 230 20% 9%;
+    --popover-foreground: 220 15% 88%;
+
+    --primary: 258 80% 65%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 230 18% 14%;
+    --secondary-foreground: 220 12% 70%;
+
+    --muted: 230 18% 12%;
+    --muted-foreground: 220 10% 48%;
+
+    --accent: 258 80% 65%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 68% 58%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 230 18% 18%;
+    --input: 230 18% 14%;
+    --ring: 258 80% 65%;
+
+    --radius: 0.5rem;
+
+    /* Sidebar — deeper than main bg */
+    --sidebar-background: 235 25% 4%;
+    --sidebar-foreground: 220 15% 82%;
+    --sidebar-primary: 258 80% 65%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 230 18% 11%;
+    --sidebar-accent-foreground: 220 15% 82%;
+    --sidebar-border: 230 18% 14%;
+    --sidebar-ring: 258 80% 65%;
+    --sidebar-width: 15rem;
+    --sidebar-width-icon: 3.5rem;
+
+    /* Custom orbitmc tokens */
+    --online: 142 70% 45%;
+    --nebula-1: 258 80% 65%;
+    --nebula-2: 200 90% 55%;
+    --star-glow: 258 80% 65%;
+  }
+
+  .dark {
+    --background: 230 20% 6%;
+    --foreground: 220 15% 88%;
+    --card: 230 20% 9%;
+    --card-foreground: 220 15% 88%;
+    --popover: 230 20% 9%;
+    --popover-foreground: 220 15% 88%;
+    --primary: 258 80% 65%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 230 18% 14%;
+    --secondary-foreground: 220 12% 70%;
+    --muted: 230 18% 12%;
+    --muted-foreground: 220 10% 48%;
+    --accent: 258 80% 65%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 68% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 230 18% 18%;
+    --input: 230 18% 14%;
+    --ring: 258 80% 65%;
+    --sidebar-background: 235 25% 4%;
+    --sidebar-foreground: 220 15% 82%;
+    --sidebar-primary: 258 80% 65%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 230 18% 11%;
+    --sidebar-accent-foreground: 220 15% 82%;
+    --sidebar-border: 230 18% 14%;
+    --sidebar-ring: 258 80% 65%;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Geist', 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  html { @apply dark; }
+}
+
+@layer utilities {
+  .hover-elevate {
+    transition: box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1), transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .hover-elevate:hover {
+    box-shadow: 0 4px 24px hsl(var(--primary) / 0.18);
+    transform: translateY(-1px);
+  }
+  .active-elevate-2:active { transform: translateY(0); box-shadow: none; }
+
+  /* Status colours */
+  .status-running  { @apply text-green-400; }
+  .status-stopped  { @apply text-muted-foreground; }
+  .status-starting { @apply text-yellow-400; }
+  .status-stopping { @apply text-orange-400; }
+  .status-error    { @apply text-destructive; }
+
+  /* Scrollbar */
+  .scrollbar-thin::-webkit-scrollbar { width: 5px; height: 5px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 3px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground)); }
+
+  /* Console / mono */
+  .console-text {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Geist Mono', monospace;
+    font-size: 0.8rem;
+    line-height: 1.6;
+  }
+  .log-info  { @apply text-foreground/80; }
+  .log-warn  { @apply text-yellow-400; }
+  .log-error { @apply text-red-400; }
+
+  /* Star field background — subtle dot grid */
+  .starfield {
+    background-image:
+      radial-gradient(circle, hsl(var(--primary) / 0.06) 1px, transparent 1px),
+      radial-gradient(circle, hsl(var(--nebula-2) / 0.04) 1px, transparent 1px);
+    background-size: 48px 48px, 80px 80px;
+    background-position: 0 0, 24px 24px;
+  }
+
+  /* Nebula glow for hero elements */
+  .nebula-glow {
+    box-shadow:
+      0 0 40px hsl(var(--primary) / 0.25),
+      0 0 80px hsl(var(--primary) / 0.10);
+  }
+
+  /* Onboarding step gradient ring */
+  .orbit-ring {
+    background: conic-gradient(
+      hsl(var(--primary)) var(--progress, 0%),
+      hsl(var(--border)) var(--progress, 0%)
+    );
+  }
+
+  /* Glowing border for active cards */
+  .card-active-glow {
+    border-color: hsl(var(--primary) / 0.6);
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.2), 0 0 16px hsl(var(--primary) / 0.12);
+  }
+}
