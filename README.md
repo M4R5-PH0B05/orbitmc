@@ -1,4 +1,4 @@
-# CraftPanel — Minecraft Server Manager
+# orbitmc — Minecraft Server Manager
 
 A self-hosted web panel for managing Minecraft servers, built with React + Express and deployable via Docker.
 
