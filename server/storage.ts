@@ -13,7 +13,21 @@ import {
   type SoftwareVersion, type InsertSoftwareVersion,
   type ServerAccess, type InsertServerAccess,
 } from "@shared/schema";
-import bcrypt from "bcryptjs";
+import { Pool } from "pg";
+
+type StorageSnapshot = {
+  users: User[];
+  servers: Server[];
+  modpacks: Modpack[];
+  mods: Mod[];
+  serverLogs: Record<string, ServerLog[]>;
+  fileEntries: FileEntry[];
+  players: Player[];
+  worlds: World[];
+  backups: Backup[];
+  serverAccessEntries: ServerAccess[];
+  nextId: MemStorage["nextId"];
+};
 
 export interface IStorage {
   // Users
@@ -21,8 +35,9 @@ export interface IStorage {
   getUserByUsername(username: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   getAllUsers(): Promise<User[]>;
+  getUserCount(): Promise<number>;
   createUser(user: InsertUser): Promise<User>;
-  updateUser(id: number, updates: Partial<InsertUser>): Promise<User | undefined>;
+  updateUser(id: number, updates: Partial<User>): Promise<User | undefined>;
   deleteUser(id: number): Promise<void>;
 
   // Servers
@@ -85,18 +100,18 @@ export interface IStorage {
 }
 
 export class MemStorage implements IStorage {
-  private users: Map<number, User> = new Map();
-  private servers: Map<number, Server> = new Map();
-  private modpacks: Map<number, Modpack> = new Map();
-  private mods: Map<number, Mod> = new Map();
-  private serverLogs: Map<number, ServerLog[]> = new Map();
-  private fileEntries: Map<number, FileEntry> = new Map();
-  private players: Map<number, Player> = new Map();
-  private worlds: Map<number, World> = new Map();
-  private backups: Map<number, Backup> = new Map();
-  private softwareVersions: Map<number, SoftwareVersion> = new Map();
-  private serverAccessEntries: Map<number, ServerAccess> = new Map();
-  private nextId = {
+  protected users: Map<number, User> = new Map();
+  protected servers: Map<number, Server> = new Map();
+  protected modpacks: Map<number, Modpack> = new Map();
+  protected mods: Map<number, Mod> = new Map();
+  protected serverLogs: Map<number, ServerLog[]> = new Map();
+  protected fileEntries: Map<number, FileEntry> = new Map();
+  protected players: Map<number, Player> = new Map();
+  protected worlds: Map<number, World> = new Map();
+  protected backups: Map<number, Backup> = new Map();
+  protected softwareVersions: Map<number, SoftwareVersion> = new Map();
+  protected serverAccessEntries: Map<number, ServerAccess> = new Map();
+  protected nextId = {
     users: 1, servers: 1, modpacks: 1, mods: 1, logs: 1, files: 1,
     players: 1, worlds: 1, backups: 1, softwareVersions: 1, serverAccess: 1,
   };
@@ -105,278 +120,7 @@ export class MemStorage implements IStorage {
     this.seed();
   }
 
-  private async seed() {
-    // Create admin user
-    const hashedPw = await bcrypt.hash("admin123", 10);
-    const admin: User = {
-      id: this.nextId.users++,
-      username: "admin",
-      email: "admin@craftpanel.local",
-      password: hashedPw,
-      role: "admin",
-      createdAt: new Date(),
-    };
-    this.users.set(admin.id, admin);
-
-    // Default server config fields
-    const defaultServerConfig = {
-      difficulty: "normal",
-      gamemode: "survival",
-      hardcore: false,
-      pvp: true,
-      onlineMode: true,
-      whitelistEnabled: false,
-      commandBlocksEnabled: false,
-      flightEnabled: false,
-      spawnProtection: 16,
-      viewDistance: 10,
-      simulationDistance: 10,
-      spawnAnimals: true,
-      spawnMonsters: true,
-      spawnNpcs: true,
-      generateStructures: true,
-      allowNether: true,
-      levelType: "minecraft:normal",
-      levelSeed: "",
-      maxTickTime: 60000,
-      networkCompressionThreshold: 256,
-      entityBroadcastRangePercentage: 100,
-      playerIdleTimeout: 0,
-      syncChunkWrites: true,
-      enableRcon: false,
-      rconPort: 25575,
-      rconPassword: "",
-      enableQuery: false,
-      queryPort: 25565,
-      jvmArgs: "-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200",
-      eulaAccepted: false,
-      forceGamemode: false,
-      announcePlayerAchievements: true,
-      resourcePack: "",
-      resourcePackSha1: "",
-      requireResourcePack: false,
-    };
-
-    // Seed sample servers
-    const s1: Server = {
-      id: this.nextId.servers++,
-      name: "Survival World",
-      type: "paper",
-      version: "1.21.4",
-      port: 25565,
-      maxRam: "4G",
-      minRam: "1G",
-      status: "stopped",
-      maxPlayers: 20,
-      motd: "Welcome to Survival World!",
-      onlinePlayers: 0,
-      createdAt: new Date(),
-      lastStarted: null,
-      containerId: null,
-      modpackId: null,
-      ...defaultServerConfig,
-    };
-    this.servers.set(s1.id, s1);
-
-    const s2: Server = {
-      id: this.nextId.servers++,
-      name: "Creative Hub",
-      type: "vanilla",
-      version: "1.21.4",
-      port: 25566,
-      maxRam: "2G",
-      minRam: "512M",
-      status: "stopped",
-      maxPlayers: 10,
-      motd: "Creative mode fun!",
-      onlinePlayers: 0,
-      createdAt: new Date(),
-      lastStarted: null,
-      containerId: null,
-      modpackId: null,
-      ...defaultServerConfig,
-      gamemode: "creative",
-    };
-    this.servers.set(s2.id, s2);
-
-    // Seed sample modpack
-    const mp: Modpack = {
-      id: this.nextId.modpacks++,
-      name: "All The Mods 9",
-      description: "All The Mods 9 for Minecraft 1.21",
-      version: "0.4.3",
-      mcVersion: "1.21.1",
-      loader: "neoforge",
-      filename: "atm9-0.4.3.zip",
-      fileSize: 52428800,
-      createdAt: new Date(),
-      modCount: 347,
-    };
-    this.modpacks.set(mp.id, mp);
-
-    // Seed mods for modpack
-    const sampleMods = [
-      { name: "JEI (Just Enough Items)", filename: "jei-1.21.1-19.2.0.jar", version: "19.2.0" },
-      { name: "Applied Energistics 2", filename: "ae2-19.0.15-alpha.jar", version: "19.0.15" },
-      { name: "Thermal Expansion", filename: "thermal_expansion-11.0.jar", version: "11.0" },
-      { name: "Create", filename: "create-0.5.1.jar", version: "0.5.1" },
-      { name: "Iron Chests", filename: "ironchests-14.4.4.jar", version: "14.4.4" },
-    ];
-    for (const m of sampleMods) {
-      const mod: Mod = {
-        id: this.nextId.mods++,
-        modpackId: mp.id,
-        name: m.name,
-        filename: m.filename,
-        fileSize: Math.floor(Math.random() * 5000000) + 100000,
-        version: m.version,
-        source: "manual",
-      };
-      this.mods.set(mod.id, mod);
-    }
-
-    // Seed server files for server 1
-    const serverFiles: InsertFileEntry[] = [
-      { serverId: 1, path: "/", name: "server.properties", isDirectory: false, content: `#Minecraft server properties\nserver-port=25565\nmax-players=20\nonline-mode=true\ndifficulty=normal\ngamemode=survival\nlevel-name=world\nmotd=Welcome to Survival World!\nview-distance=10\nsimulation-distance=10\nspawn-protection=16\nwhite-list=false\nenable-command-block=false\n`, size: 420 },
-      { serverId: 1, path: "/", name: "ops.json", isDirectory: false, content: `[]`, size: 2 },
-      { serverId: 1, path: "/", name: "whitelist.json", isDirectory: false, content: `[]`, size: 2 },
-      { serverId: 1, path: "/", name: "banned-players.json", isDirectory: false, content: `[]`, size: 2 },
-      { serverId: 1, path: "/", name: "world", isDirectory: true, content: null, size: 0 },
-      { serverId: 1, path: "/world", name: "level.dat", isDirectory: false, content: null, size: 8192 },
-      { serverId: 1, path: "/", name: "logs", isDirectory: true, content: null, size: 0 },
-      { serverId: 1, path: "/logs", name: "latest.log", isDirectory: false, content: `[00:00:01 INFO]: Starting minecraft server version 1.21.4\n[00:00:02 INFO]: Loading properties\n[00:00:03 INFO]: Default game type: SURVIVAL\n[00:00:04 INFO]: Preparing level "world"\n[00:00:08 INFO]: Done! For help, type "help"\n`, size: 1024 },
-      { serverId: 1, path: "/", name: "plugins", isDirectory: true, content: null, size: 0 },
-    ];
-    for (const f of serverFiles) {
-      const entry: FileEntry = {
-        id: this.nextId.files++,
-        serverId: f.serverId,
-        path: f.path,
-        name: f.name,
-        isDirectory: f.isDirectory ?? false,
-        content: f.content ?? null,
-        size: f.size ?? 0,
-        updatedAt: new Date(),
-      };
-      this.fileEntries.set(entry.id, entry);
-    }
-
-    // Seed logs for server 1
-    const logMessages = [
-      { level: "info", message: "[00:00:01 INFO]: Starting minecraft server version 1.21.4" },
-      { level: "info", message: "[00:00:02 INFO]: Loading properties" },
-      { level: "info", message: "[00:00:03 INFO]: Default game type: SURVIVAL" },
-      { level: "warn", message: "[00:00:03 WARN]: **** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!" },
-      { level: "info", message: "[00:00:04 INFO]: Preparing level \"world\"" },
-      { level: "info", message: "[00:00:08 INFO]: Done! For help, type \"help\"" },
-      { level: "info", message: "[00:05:22 INFO]: Player Steve joined the game" },
-      { level: "info", message: "[00:10:14 INFO]: Player Steve left the game" },
-    ];
-    const logs: ServerLog[] = logMessages.map(l => ({
-      id: this.nextId.logs++,
-      serverId: 1,
-      message: l.message,
-      level: l.level,
-      timestamp: new Date(Date.now() - Math.random() * 86400000),
-    }));
-    this.serverLogs.set(1, logs);
-
-    // Seed sample players for server 1
-    const samplePlayers: Player[] = [
-      {
-        id: this.nextId.players++,
-        serverId: 1,
-        username: "Steve",
-        uuid: "8667ba71-b85a-4004-af54-457a9734eed7",
-        isOp: true,
-        isBanned: false,
-        isWhitelisted: true,
-        banReason: null,
-        lastSeen: new Date(Date.now() - 3600000),
-        firstJoined: new Date(Date.now() - 86400000 * 30),
-        playtime: 360000,
-      },
-      {
-        id: this.nextId.players++,
-        serverId: 1,
-        username: "Alex",
-        uuid: "6ab43178-89fd-4905-97f6-0f67d88fb609",
-        isOp: false,
-        isBanned: false,
-        isWhitelisted: true,
-        banReason: null,
-        lastSeen: new Date(Date.now() - 7200000),
-        firstJoined: new Date(Date.now() - 86400000 * 20),
-        playtime: 180000,
-      },
-      {
-        id: this.nextId.players++,
-        serverId: 1,
-        username: "Notch",
-        uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5",
-        isOp: false,
-        isBanned: true,
-        isWhitelisted: false,
-        banReason: "Grief",
-        lastSeen: new Date(Date.now() - 86400000 * 7),
-        firstJoined: new Date(Date.now() - 86400000 * 60),
-        playtime: 72000,
-      },
-    ];
-    for (const p of samplePlayers) {
-      this.players.set(p.id, p);
-    }
-
-    // Seed sample worlds for server 1
-    const sampleWorlds: World[] = [
-      {
-        id: this.nextId.worlds++,
-        serverId: 1,
-        name: "world",
-        type: "overworld",
-        seed: "-1234567890",
-        size: 524288000,
-        lastBackup: new Date(Date.now() - 86400000),
-        isActive: true,
-      },
-      {
-        id: this.nextId.worlds++,
-        serverId: 1,
-        name: "world_nether",
-        type: "nether",
-        seed: "-1234567890",
-        size: 104857600,
-        lastBackup: new Date(Date.now() - 86400000),
-        isActive: true,
-      },
-      {
-        id: this.nextId.worlds++,
-        serverId: 1,
-        name: "world_the_end",
-        type: "the_end",
-        seed: "-1234567890",
-        size: 52428800,
-        lastBackup: null,
-        isActive: true,
-      },
-    ];
-    for (const w of sampleWorlds) {
-      this.worlds.set(w.id, w);
-    }
-
-    // Seed sample backup for server 1
-    const sampleBackup: Backup = {
-      id: this.nextId.backups++,
-      serverId: 1,
-      name: "Backup 2026-03-17",
-      size: 681574400,
-      type: "scheduled",
-      status: "complete",
-      createdAt: new Date(Date.now() - 86400000),
-      notes: null,
-    };
-    this.backups.set(sampleBackup.id, sampleBackup);
-
+  private seed() {
     // Seed software versions
     const versions: SoftwareVersion[] = [
       {
@@ -430,6 +174,69 @@ export class MemStorage implements IStorage {
     }
   }
 
+  protected serializeState(): StorageSnapshot {
+    return {
+      users: [...this.users.values()],
+      servers: [...this.servers.values()],
+      modpacks: [...this.modpacks.values()],
+      mods: [...this.mods.values()],
+      serverLogs: Object.fromEntries(
+        [...this.serverLogs.entries()].map(([serverId, logs]) => [String(serverId), logs]),
+      ),
+      fileEntries: [...this.fileEntries.values()],
+      players: [...this.players.values()],
+      worlds: [...this.worlds.values()],
+      backups: [...this.backups.values()],
+      serverAccessEntries: [...this.serverAccessEntries.values()],
+      nextId: this.nextId,
+    };
+  }
+
+  protected hydrateState(snapshot: StorageSnapshot) {
+    this.users = new Map(snapshot.users.map(user => [user.id, {
+      ...user,
+      createdAt: new Date(user.createdAt),
+    }]));
+    this.servers = new Map(snapshot.servers.map(server => [server.id, {
+      ...server,
+      createdAt: new Date(server.createdAt),
+      lastStarted: server.lastStarted ? new Date(server.lastStarted) : null,
+    }]));
+    this.modpacks = new Map(snapshot.modpacks.map(modpack => [modpack.id, {
+      ...modpack,
+      createdAt: new Date(modpack.createdAt),
+    }]));
+    this.mods = new Map(snapshot.mods.map(mod => [mod.id, mod]));
+    this.serverLogs = new Map(
+      Object.entries(snapshot.serverLogs || {}).map(([serverId, logs]) => [
+        Number(serverId),
+        logs.map(log => ({ ...log, timestamp: new Date(log.timestamp) })),
+      ]),
+    );
+    this.fileEntries = new Map(snapshot.fileEntries.map(file => [file.id, {
+      ...file,
+      updatedAt: new Date(file.updatedAt),
+    }]));
+    this.players = new Map(snapshot.players.map(player => [player.id, {
+      ...player,
+      lastSeen: player.lastSeen ? new Date(player.lastSeen) : null,
+      firstJoined: player.firstJoined ? new Date(player.firstJoined) : null,
+    }]));
+    this.worlds = new Map(snapshot.worlds.map(world => [world.id, {
+      ...world,
+      lastBackup: world.lastBackup ? new Date(world.lastBackup) : null,
+    }]));
+    this.backups = new Map(snapshot.backups.map(backup => [backup.id, {
+      ...backup,
+      createdAt: new Date(backup.createdAt),
+    }]));
+    this.serverAccessEntries = new Map(snapshot.serverAccessEntries.map(access => [access.id, {
+      ...access,
+      grantedAt: new Date(access.grantedAt),
+    }]));
+    this.nextId = snapshot.nextId;
+  }
+
   // Users
   async getUser(id: number) { return this.users.get(id); }
   async getUserByUsername(username: string) {
@@ -439,6 +246,7 @@ export class MemStorage implements IStorage {
     return [...this.users.values()].find(u => u.email.toLowerCase() === email.toLowerCase());
   }
   async getAllUsers() { return [...this.users.values()]; }
+  async getUserCount() { return this.users.size; }
   async createUser(user: InsertUser): Promise<User> {
     const newUser: User = {
       id: this.nextId.users++,
@@ -446,12 +254,15 @@ export class MemStorage implements IStorage {
       email: user.email,
       password: user.password,
       role: user.role ?? "viewer",
+      requiresPasswordChange: false,
+      twoFactorEnabled: false,
+      twoFactorSecret: null,
       createdAt: new Date(),
     };
     this.users.set(newUser.id, newUser);
     return newUser;
   }
-  async updateUser(id: number, updates: Partial<InsertUser>) {
+  async updateUser(id: number, updates: Partial<User>) {
     const user = this.users.get(id);
     if (!user) return undefined;
     const updated = { ...user, ...updates };
@@ -787,4 +598,137 @@ export class MemStorage implements IStorage {
   async deleteServerAccess(id: number) { this.serverAccessEntries.delete(id); }
 }
 
-export const storage = new MemStorage();
+class PostgresBackedStorage extends MemStorage {
+  public readonly ready: Promise<void>;
+  private readonly pool: Pool;
+
+  constructor(databaseUrl: string) {
+    super();
+    this.pool = new Pool({ connectionString: databaseUrl });
+    this.ready = this.initialize();
+  }
+
+  private async initialize() {
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS orbitmc_state (
+        id integer PRIMARY KEY,
+        payload jsonb NOT NULL,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+
+    const result = await this.pool.query<{ payload: StorageSnapshot }>(
+      "SELECT payload FROM orbitmc_state WHERE id = 1",
+    );
+    if (result.rows[0]?.payload) {
+      this.hydrateState(result.rows[0].payload);
+    } else {
+      await this.persist();
+    }
+  }
+
+  private async persist() {
+    await this.pool.query(
+      `INSERT INTO orbitmc_state (id, payload, updated_at)
+       VALUES (1, $1::jsonb, now())
+       ON CONFLICT (id)
+       DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()`,
+      [JSON.stringify(this.serializeState())],
+    );
+  }
+
+  private async afterMutation<T>(value: T): Promise<T> {
+    await this.persist();
+    return value;
+  }
+
+  async createUser(user: InsertUser): Promise<User> {
+    return this.afterMutation(await super.createUser(user));
+  }
+  async updateUser(id: number, updates: Partial<User>) {
+    return this.afterMutation(await super.updateUser(id, updates));
+  }
+  async deleteUser(id: number) {
+    await super.deleteUser(id);
+    await this.persist();
+  }
+  async createServer(server: InsertServer): Promise<Server> {
+    return this.afterMutation(await super.createServer(server));
+  }
+  async updateServer(id: number, updates: Partial<Server>) {
+    return this.afterMutation(await super.updateServer(id, updates));
+  }
+  async deleteServer(id: number) {
+    await super.deleteServer(id);
+    await this.persist();
+  }
+  async createModpack(modpack: InsertModpack): Promise<Modpack> {
+    return this.afterMutation(await super.createModpack(modpack));
+  }
+  async updateModpack(id: number, updates: Partial<Modpack>) {
+    return this.afterMutation(await super.updateModpack(id, updates));
+  }
+  async deleteModpack(id: number) {
+    await super.deleteModpack(id);
+    await this.persist();
+  }
+  async createMod(mod: InsertMod): Promise<Mod> {
+    return this.afterMutation(await super.createMod(mod));
+  }
+  async deleteMod(id: number) {
+    await super.deleteMod(id);
+    await this.persist();
+  }
+  async addServerLog(log: InsertServerLog): Promise<ServerLog> {
+    return this.afterMutation(await super.addServerLog(log));
+  }
+  async clearServerLogs(serverId: number) {
+    await super.clearServerLogs(serverId);
+    await this.persist();
+  }
+  async createFile(file: InsertFileEntry): Promise<FileEntry> {
+    return this.afterMutation(await super.createFile(file));
+  }
+  async updateFile(id: number, updates: Partial<FileEntry>) {
+    return this.afterMutation(await super.updateFile(id, updates));
+  }
+  async deleteFile(id: number) {
+    await super.deleteFile(id);
+    await this.persist();
+  }
+  async createPlayer(player: InsertPlayer): Promise<Player> {
+    return this.afterMutation(await super.createPlayer(player));
+  }
+  async updatePlayer(id: number, updates: Partial<Player>) {
+    return this.afterMutation(await super.updatePlayer(id, updates));
+  }
+  async deletePlayer(id: number) {
+    await super.deletePlayer(id);
+    await this.persist();
+  }
+  async createWorld(world: InsertWorld): Promise<World> {
+    return this.afterMutation(await super.createWorld(world));
+  }
+  async deleteWorld(id: number) {
+    await super.deleteWorld(id);
+    await this.persist();
+  }
+  async createBackup(backup: InsertBackup): Promise<Backup> {
+    return this.afterMutation(await super.createBackup(backup));
+  }
+  async deleteBackup(id: number) {
+    await super.deleteBackup(id);
+    await this.persist();
+  }
+  async setServerAccess(access: InsertServerAccess): Promise<ServerAccess> {
+    return this.afterMutation(await super.setServerAccess(access));
+  }
+  async deleteServerAccess(id: number) {
+    await super.deleteServerAccess(id);
+    await this.persist();
+  }
+}
+
+const databaseUrl = process.env.DATABASE_URL;
+export const storage = databaseUrl ? new PostgresBackedStorage(databaseUrl) : new MemStorage();
+export const storageReady = storage instanceof PostgresBackedStorage ? storage.ready : Promise.resolve();

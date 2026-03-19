@@ -21,12 +21,26 @@ import {
   streamLogs,
   getContainerStatus,
 } from "./docker-manager";
+import { buildOtpAuthUrl, generateBase32Secret, verifyTotp } from "./totp";
 
 const MemStore = MemoryStore(session);
+const OTP_ISSUER = "OrbitMC";
 
 // Active log stream cleanup functions keyed by server id
 const logStreamCleanup: Map<number, () => void> = new Map();
 const wsClients: Map<number, Set<WebSocket>> = new Map();
+
+function sanitizeUser(user: any) {
+  return {
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    role: user.role,
+    requiresPasswordChange: !!user.requiresPasswordChange,
+    twoFactorEnabled: !!user.twoFactorEnabled,
+    createdAt: user.createdAt,
+  };
+}
 
 function broadcastLog(serverId: number, message: string, level = "info") {
   const clients = wsClients.get(serverId);
@@ -95,16 +109,79 @@ export function registerRoutes(httpServer: HttpServer, app: Express) {
     next();
   };
 
+  const setupSchema = z.object({
+    username: z.string().trim().min(3).max(32),
+    email: z.string().trim().email(),
+    password: z.string().min(8),
+  });
+
+  const changePasswordSchema = z.object({
+    currentPassword: z.string().min(1),
+    newPassword: z.string().min(8),
+  });
+
+  const totpEnableSchema = z.object({
+    secret: z.string().min(16),
+    token: z.string().regex(/^\d{6}$/),
+  });
+
+  const totpDisableSchema = z.object({
+    password: z.string().min(1),
+    token: z.string().regex(/^\d{6}$/),
+  });
+
+  // ===== SETUP ROUTES =====
+  app.get("/api/setup/status", async (_req, res) => {
+    const initialized = (await storage.getUserCount()) > 0;
+    res.json({ initialized });
+  });
+
+  app.post("/api/setup/initialize", async (req, res) => {
+    try {
+      if ((await storage.getUserCount()) > 0) {
+        return res.status(409).json({ error: "OrbitMC has already been initialized" });
+      }
+
+      const data = setupSchema.parse(req.body);
+      const password = await bcrypt.hash(data.password, 10);
+      const user = await storage.createUser({
+        username: data.username,
+        email: data.email,
+        password,
+        role: "admin",
+      });
+
+      await storage.updateUser(user.id, { requiresPasswordChange: false });
+      (req.session as any).userId = user.id;
+      const created = await storage.getUser(user.id);
+      res.json(sanitizeUser(created));
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
   // ===== AUTH ROUTES =====
   app.post("/api/auth/login", async (req, res) => {
     try {
-      const { username, password } = req.body;
+      if ((await storage.getUserCount()) === 0) {
+        return res.status(409).json({ error: "OrbitMC has not been initialized yet" });
+      }
+
+      const { username, password, otp } = req.body;
       const user = await storage.getUserByUsername(username) || await storage.getUserByEmail(username);
       if (!user) return res.status(401).json({ error: "Invalid credentials" });
       const valid = await bcrypt.compare(password, user.password);
       if (!valid) return res.status(401).json({ error: "Invalid credentials" });
+
+      if (user.twoFactorEnabled) {
+        if (!otp) return res.json({ requiresTwoFactor: true });
+        if (!user.twoFactorSecret || !verifyTotp(user.twoFactorSecret, otp)) {
+          return res.status(401).json({ error: "Invalid authentication code" });
+        }
+      }
+
       (req.session as any).userId = user.id;
-      res.json({ id: user.id, username: user.username, email: user.email, role: user.role });
+      res.json(sanitizeUser(user));
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -119,13 +196,95 @@ export function registerRoutes(httpServer: HttpServer, app: Express) {
     if (!uid) return res.status(401).json({ error: "Not authenticated" });
     const user = await storage.getUser(uid);
     if (!user) return res.status(401).json({ error: "Not authenticated" });
-    res.json({ id: user.id, username: user.username, email: user.email, role: user.role });
+    res.json(sanitizeUser(user));
+  });
+
+  app.post("/api/auth/change-password", requireAuth, async (req, res) => {
+    try {
+      const uid = (req.session as any).userId;
+      const user = await storage.getUser(uid);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const data = changePasswordSchema.parse(req.body);
+      const valid = await bcrypt.compare(data.currentPassword, user.password);
+      if (!valid) return res.status(401).json({ error: "Current password is incorrect" });
+
+      const password = await bcrypt.hash(data.newPassword, 10);
+      const updated = await storage.updateUser(uid, {
+        password,
+        requiresPasswordChange: false,
+      });
+
+      res.json(sanitizeUser(updated));
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  app.get("/api/auth/2fa/setup", requireAuth, async (req, res) => {
+    const uid = (req.session as any).userId;
+    const user = await storage.getUser(uid);
+    if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+    const secret = generateBase32Secret();
+    res.json({
+      secret,
+      otpAuthUrl: buildOtpAuthUrl(user.username, OTP_ISSUER, secret),
+      issuer: OTP_ISSUER,
+    });
+  });
+
+  app.post("/api/auth/2fa/enable", requireAuth, async (req, res) => {
+    try {
+      const uid = (req.session as any).userId;
+      const user = await storage.getUser(uid);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const data = totpEnableSchema.parse(req.body);
+      if (!verifyTotp(data.secret, data.token)) {
+        return res.status(400).json({ error: "Invalid authentication code" });
+      }
+
+      const updated = await storage.updateUser(uid, {
+        twoFactorEnabled: true,
+        twoFactorSecret: data.secret,
+      });
+      res.json(sanitizeUser(updated));
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/auth/2fa/disable", requireAuth, async (req, res) => {
+    try {
+      const uid = (req.session as any).userId;
+      const user = await storage.getUser(uid);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      if (!user.twoFactorEnabled || !user.twoFactorSecret) {
+        return res.status(400).json({ error: "Two-factor authentication is not enabled" });
+      }
+
+      const data = totpDisableSchema.parse(req.body);
+      const valid = await bcrypt.compare(data.password, user.password);
+      if (!valid) return res.status(401).json({ error: "Current password is incorrect" });
+      if (!verifyTotp(user.twoFactorSecret, data.token)) {
+        return res.status(400).json({ error: "Invalid authentication code" });
+      }
+
+      const updated = await storage.updateUser(uid, {
+        twoFactorEnabled: false,
+        twoFactorSecret: null,
+      });
+      res.json(sanitizeUser(updated));
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
   });
 
   // ===== USER ROUTES =====
   app.get("/api/users", requireAdmin, async (req, res) => {
     const users = await storage.getAllUsers();
-    res.json(users.map(u => ({ ...u, password: undefined })));
+    res.json(users.map(sanitizeUser));
   });
 
   app.post("/api/users", requireAdmin, async (req, res) => {
@@ -133,9 +292,12 @@ export function registerRoutes(httpServer: HttpServer, app: Express) {
       const data = insertUserSchema.parse(req.body);
       const existing = await storage.getUserByUsername(data.username);
       if (existing) return res.status(400).json({ error: "Username already taken" });
+      const existingEmail = await storage.getUserByEmail(data.email);
+      if (existingEmail) return res.status(400).json({ error: "Email already in use" });
       const hashed = await bcrypt.hash(data.password, 10);
       const user = await storage.createUser({ ...data, password: hashed });
-      res.json({ ...user, password: undefined });
+      const updated = await storage.updateUser(user.id, { requiresPasswordChange: true });
+      res.json(sanitizeUser(updated));
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
@@ -148,7 +310,7 @@ export function registerRoutes(httpServer: HttpServer, app: Express) {
       if (updates.password) updates.password = await bcrypt.hash(updates.password, 10);
       const user = await storage.updateUser(id, updates);
       if (!user) return res.status(404).json({ error: "User not found" });
-      res.json({ ...user, password: undefined });
+      res.json(sanitizeUser(user));
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
@@ -196,8 +358,22 @@ export function registerRoutes(httpServer: HttpServer, app: Express) {
 
   app.delete("/api/servers/:id", requireAuth, async (req, res) => {
     const id = parseInt(req.params.id);
+    const server = await storage.getServer(id);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+
     const interval = runningServers.get(id);
     if (interval) { clearInterval(interval); runningServers.delete(id); }
+
+    const cleanup = logStreamCleanup.get(id);
+    if (cleanup) {
+      cleanup();
+      logStreamCleanup.delete(id);
+    }
+
+    if (server.containerId) {
+      await dockerRemove(server.containerId);
+    }
+
     await storage.deleteServer(id);
     res.json({ success: true });
   });

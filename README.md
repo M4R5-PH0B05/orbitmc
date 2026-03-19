@@ -22,7 +22,7 @@ cd craftpanel
 docker compose up -d
 
 # Panel is now available at http://your-server-ip:8080
-# Default credentials: admin / admin123
+# On first launch, create the initial admin account in the web UI
 ```
 
 ## Docker Compose
@@ -64,19 +64,13 @@ NODE_ENV=production node dist/index.cjs
 | **Operator** | Start/stop servers, view console, edit files, manage modpacks |
 | **Viewer** | View-only access to panel |
 
-## Default Credentials
-
-- Username: `admin`
-- Password: `admin123`
-
-**Change the default password immediately after first login** via the Users page.
-
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | HTTP port to listen on |
 | `SESSION_SECRET` | `craftpanel-secret-...` | Secret for session encryption — change in production! |
+| `DATABASE_URL` | unset | PostgreSQL connection string used for persistent panel state |
 | `NODE_ENV` | `development` | Set to `production` for production builds |
 
 ## Connecting Real Minecraft Servers
@@ -85,5 +79,7 @@ CraftPanel currently manages server metadata and files in its own database. To c
 
 ## Notes
 
-- **Storage**: All data is stored in memory by default (resets on restart). For persistent storage in production, configure a database.
+- **Bootstrap**: OrbitMC now uses a first-run initialization flow instead of shipping a permanent default admin account.
+- **Persistence**: Configure `DATABASE_URL` to keep users, servers, and panel state across restarts.
+- **2FA**: TOTP-based two-factor authentication can be enabled per account from the Users page.
 - **File Management**: The file manager in this version uses a virtual filesystem stored in the panel database. For production use with real Minecraft server files, mount the server directory and extend the file API routes to use the local filesystem.

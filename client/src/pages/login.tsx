@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2 } from "lucide-react";
 
@@ -69,30 +70,83 @@ function OrbitLogo({ size = 48 }: { size?: number }) {
 export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [otp, setOtp] = useState("");
+  const [needsOtp, setNeedsOtp] = useState(false);
+  const [setupForm, setSetupForm] = useState({ username: "", email: "", password: "", confirmPassword: "" });
   const { toast } = useToast();
 
+  const { data: setupStatus, isLoading: setupLoading } = useQuery({
+    queryKey: ["/api/setup/status"],
+    queryFn: async () => {
+      const res = await fetch("/api/setup/status");
+      if (!res.ok) throw new Error("Failed to load setup status");
+      return res.json() as Promise<{ initialized: boolean }>;
+    },
+    retry: false,
+    staleTime: 60000,
+  });
+
   const loginMutation = useMutation({
-    mutationFn: async (creds: { username: string; password: string }) => {
+    mutationFn: async (creds: { username: string; password: string; otp?: string }) => {
       const res = await apiRequest("POST", "/api/auth/login", creds);
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Login failed");
+      return res.json();
+    },
+    onSuccess: (user) => {
+      if (user.requiresTwoFactor) {
+        setNeedsOtp(true);
+        toast({ title: "Authentication code required", description: "Enter the 6-digit code from your authenticator app." });
+        return;
       }
+      queryClient.setQueryData(["/api/auth/me"], user);
+    },
+    onError: (e: Error) => {
+      setOtp("");
+      toast({ title: "Login failed", description: e.message, variant: "destructive" });
+    },
+  });
+
+  const setupMutation = useMutation({
+    mutationFn: async (data: { username: string; email: string; password: string }) => {
+      const res = await apiRequest("POST", "/api/setup/initialize", data);
       return res.json();
     },
     onSuccess: (user) => {
       queryClient.setQueryData(["/api/auth/me"], user);
     },
     onError: (e: Error) => {
-      toast({ title: "Login failed", description: e.message, variant: "destructive" });
+      toast({ title: "Setup failed", description: e.message, variant: "destructive" });
     },
   });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!username || !password) return;
-    loginMutation.mutate({ username, password });
+    loginMutation.mutate({ username, password, otp: needsOtp ? otp : undefined });
   };
+
+  const handleSetup = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!setupForm.username || !setupForm.email || !setupForm.password) return;
+    if (setupForm.password !== setupForm.confirmPassword) {
+      toast({ title: "Passwords do not match", variant: "destructive" });
+      return;
+    }
+    setupMutation.mutate({
+      username: setupForm.username.trim(),
+      email: setupForm.email.trim(),
+      password: setupForm.password,
+    });
+  };
+
+  if (setupLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background relative overflow-hidden starfield">
+        <Loader2 className="w-6 h-6 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  const initialized = !!setupStatus?.initialized;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background relative overflow-hidden starfield">
@@ -110,51 +164,123 @@ export default function LoginPage() {
 
         <Card className="bg-card/80 backdrop-blur-sm border-border shadow-2xl">
           <CardContent className="p-6">
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="username" className="text-foreground/80">Username or email</Label>
-                <Input
-                  id="username"
-                  data-testid="input-username"
-                  placeholder="admin"
-                  value={username}
-                  onChange={e => setUsername(e.target.value)}
-                  autoComplete="username"
-                  disabled={loginMutation.isPending}
-                  className="bg-secondary/60 border-border focus-visible:ring-primary/50"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="password" className="text-foreground/80">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  data-testid="input-password"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  autoComplete="current-password"
-                  disabled={loginMutation.isPending}
-                  className="bg-secondary/60 border-border focus-visible:ring-primary/50"
-                />
-              </div>
-              <Button
-                type="submit"
-                className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-semibold"
-                data-testid="button-login"
-                disabled={loginMutation.isPending || !username || !password}
-              >
-                {loginMutation.isPending ? (
-                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Entering orbit...</>
-                ) : "Launch Panel"}
-              </Button>
-            </form>
-
-            <div className="mt-5 pt-4 border-t border-border text-center">
-              <p className="text-xs text-muted-foreground">
-                Default credentials: <code className="bg-secondary px-1.5 py-0.5 rounded text-foreground/70">admin</code> / <code className="bg-secondary px-1.5 py-0.5 rounded text-foreground/70">admin123</code>
-              </p>
-            </div>
+            {initialized ? (
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="username" className="text-foreground/80">Username or email</Label>
+                  <Input
+                    id="username"
+                    data-testid="input-username"
+                    placeholder="marsphobos"
+                    value={username}
+                    onChange={e => setUsername(e.target.value)}
+                    autoComplete="username"
+                    disabled={loginMutation.isPending || needsOtp}
+                    className="bg-secondary/60 border-border focus-visible:ring-primary/50"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="password" className="text-foreground/80">Password</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    data-testid="input-password"
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    autoComplete="current-password"
+                    disabled={loginMutation.isPending || needsOtp}
+                    className="bg-secondary/60 border-border focus-visible:ring-primary/50"
+                  />
+                </div>
+                {needsOtp && (
+                  <div className="space-y-2">
+                    <Label className="text-foreground/80">Authentication code</Label>
+                    <InputOTP maxLength={6} value={otp} onChange={setOtp}>
+                      <InputOTPGroup className="w-full justify-center">
+                        {Array.from({ length: 6 }, (_, index) => (
+                          <InputOTPSlot key={index} index={index} />
+                        ))}
+                      </InputOTPGroup>
+                    </InputOTP>
+                    <p className="text-xs text-muted-foreground text-center">
+                      Enter the 6-digit code from your authenticator app.
+                    </p>
+                  </div>
+                )}
+                <Button
+                  type="submit"
+                  className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-semibold"
+                  data-testid="button-login"
+                  disabled={loginMutation.isPending || !username || !password || (needsOtp && otp.length !== 6)}
+                >
+                  {loginMutation.isPending ? (
+                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Entering orbit...</>
+                  ) : needsOtp ? "Verify and Launch" : "Launch Panel"}
+                </Button>
+              </form>
+            ) : (
+              <form onSubmit={handleSetup} className="space-y-4">
+                <div className="space-y-1">
+                  <h2 className="text-lg font-semibold text-foreground">Initialize OrbitMC</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Create the first administrator account. This replaces the old hardcoded default login.
+                  </p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="setup-username" className="text-foreground/80">Admin username</Label>
+                  <Input
+                    id="setup-username"
+                    value={setupForm.username}
+                    onChange={e => setSetupForm(f => ({ ...f, username: e.target.value }))}
+                    disabled={setupMutation.isPending}
+                    className="bg-secondary/60 border-border focus-visible:ring-primary/50"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="setup-email" className="text-foreground/80">Email</Label>
+                  <Input
+                    id="setup-email"
+                    type="email"
+                    value={setupForm.email}
+                    onChange={e => setSetupForm(f => ({ ...f, email: e.target.value }))}
+                    disabled={setupMutation.isPending}
+                    className="bg-secondary/60 border-border focus-visible:ring-primary/50"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="setup-password" className="text-foreground/80">Password</Label>
+                  <Input
+                    id="setup-password"
+                    type="password"
+                    value={setupForm.password}
+                    onChange={e => setSetupForm(f => ({ ...f, password: e.target.value }))}
+                    disabled={setupMutation.isPending}
+                    className="bg-secondary/60 border-border focus-visible:ring-primary/50"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="setup-confirm-password" className="text-foreground/80">Confirm password</Label>
+                  <Input
+                    id="setup-confirm-password"
+                    type="password"
+                    value={setupForm.confirmPassword}
+                    onChange={e => setSetupForm(f => ({ ...f, confirmPassword: e.target.value }))}
+                    disabled={setupMutation.isPending}
+                    className="bg-secondary/60 border-border focus-visible:ring-primary/50"
+                  />
+                </div>
+                <Button
+                  type="submit"
+                  className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-semibold"
+                  disabled={setupMutation.isPending || !setupForm.username || !setupForm.email || !setupForm.password || !setupForm.confirmPassword}
+                >
+                  {setupMutation.isPending ? (
+                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Initializing...</>
+                  ) : "Create Admin Account"}
+                </Button>
+              </form>
+            )}
           </CardContent>
         </Card>
 

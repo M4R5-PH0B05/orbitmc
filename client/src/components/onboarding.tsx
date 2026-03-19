@@ -536,9 +536,12 @@ export function OnboardingModal({ username, role, onComplete }: OnboardingProps)
     setCompleting(true);
     if (passwordData?.password) {
       try {
-        // Update the current user's password
         const me = await (await apiRequest("GET", "/api/auth/me")).json();
-        await apiRequest("PATCH", `/api/users/${me.id}`, { password: passwordData.password });
+        await apiRequest("POST", "/api/auth/change-password", {
+          currentPassword: "ChangeMe123!",
+          newPassword: passwordData.password,
+        });
+        queryClient.setQueryData(["/api/auth/me"], { ...me, requiresPasswordChange: false });
         toast({ title: "Password updated" });
       } catch { /* silent */ }
     }
