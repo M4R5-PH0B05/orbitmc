@@ -70,6 +70,12 @@ export function registerRoutes(httpServer: HttpServer, app: Express) {
       if (!wsClients.has(serverId)) wsClients.set(serverId, new Set());
       wsClients.get(serverId)!.add(ws);
       ws.on("close", () => wsClients.get(serverId)?.delete(ws));
+      storage.getServer(serverId).then(server => {
+        if (!server?.containerId) return;
+        if (server.status !== "running" && server.status !== "starting") return;
+        if (logStreamCleanup.has(serverId)) return;
+        attachLogStream(serverId, server.containerId);
+      }).catch(() => {});
       // Send recent logs
       storage.getServerLogs(serverId, 50).then(logs => {
         logs.forEach(l => ws.send(JSON.stringify({ type: "log", serverId: l.serverId, message: l.message, level: l.level, timestamp: l.timestamp })));

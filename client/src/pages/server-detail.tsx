@@ -471,13 +471,7 @@ function TabConsole({ server, serverId }: { server: ServerType; serverId: number
 
   useEffect(() => {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const portProxy = (window as any).__PORT_5000__;
-    const host = portProxy
-      ? `${window.location.host}${portProxy}`
-      : `${window.location.hostname}:5000`;
-    const wsUrl = portProxy
-      ? `${proto}//${window.location.host}${portProxy.replace(/^\//, "")}/ws?serverId=${serverId}`
-      : `${proto}//${window.location.hostname}:5000/ws?serverId=${serverId}`;
+    const wsUrl = `${proto}//${window.location.host}/ws?serverId=${serverId}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     ws.onmessage = (e) => {
