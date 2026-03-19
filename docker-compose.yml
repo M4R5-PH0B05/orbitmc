@@ -10,38 +10,24 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      # Persist server data & modpack files
+      # Persist panel data
       - craftpanel_data:/data
+      # REQUIRED: gives OrbitMC access to the host Docker daemon
+      # so it can create/start/stop Minecraft server containers.
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - NODE_ENV=production
       - PORT=8080
-      # Change this in production! Used for session encryption.
+      # Change this in production!
       - SESSION_SECRET=change-me-in-production-please
+    # Run as root so the node process can access the Docker socket.
+    # Alternatively: add the container user to the docker group on the host.
+    user: root
     networks:
       - craftpanel_net
 
-  # Optional: Run alongside your Minecraft servers
-  # Uncomment and configure to add your servers here
-  # mc-server-1:
-  #   image: itzg/minecraft-server:latest
-  #   container_name: mc-survival
-  #   restart: unless-stopped
-  #   ports:
-  #     - "25565:25565"
-  #   volumes:
-  #     - mc_survival_data:/data
-  #   environment:
-  #     - EULA=TRUE
-  #     - TYPE=PAPER
-  #     - VERSION=1.21.4
-  #     - MEMORY=4G
-  #     - MAX_PLAYERS=20
-  #   networks:
-  #     - craftpanel_net
-
 volumes:
   craftpanel_data:
-  # mc_survival_data:
 
 networks:
   craftpanel_net:

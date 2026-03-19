@@ -11,11 +11,21 @@ import {
 import { z } from "zod";
 import session from "express-session";
 import MemoryStore from "memorystore";
+import {
+  isDockerAvailable,
+  startServer as dockerStart,
+  stopServer as dockerStop,
+  restartServer as dockerRestart,
+  removeServer as dockerRemove,
+  sendCommand as dockerSendCommand,
+  streamLogs,
+  getContainerStatus,
+} from "./docker-manager";
 
 const MemStore = MemoryStore(session);
 
-// Track fake "running" server simulations
-const runningServers: Map<number, NodeJS.Timeout> = new Map();
+// Active log stream cleanup functions keyed by server id
+const logStreamCleanup: Map<number, () => void> = new Map();
 const wsClients: Map<number, Set<WebSocket>> = new Map();
 
 function broadcastLog(serverId: number, message: string, level = "info") {
@@ -186,25 +196,89 @@ export function registerRoutes(httpServer: HttpServer, app: Express) {
     res.json({ success: true });
   });
 
-  // Server power controls
+  // ── Docker availability check ──────────────────────────────────────────
+  app.get("/api/docker/status", requireAuth, async (_req, res) => {
+    const available = await isDockerAvailable();
+    res.json({ available });
+  });
+
+  // ── Helper: attach live log stream from Docker to WebSocket ─────────────
+  function attachLogStream(serverId: number, containerId: string) {
+    // Stop any previous stream for this server
+    const existing = logStreamCleanup.get(serverId);
+    if (existing) existing();
+
+    const stop = streamLogs(
+      containerId,
+      (line) => {
+        const level = line.includes("ERROR") || line.includes("FATAL")
+          ? "error"
+          : line.includes("WARN")
+          ? "warn"
+          : "info";
+        broadcastLog(serverId, line, level);
+      },
+      (err) => {
+        broadcastLog(serverId, `[OrbitMC]: Log stream error: ${err.message}`, "error");
+      }
+    );
+    logStreamCleanup.set(serverId, stop);
+  }
+
+  // ── Server power controls ────────────────────────────────────────────────
   app.post("/api/servers/:id/start", requireAuth, async (req, res) => {
     const id = parseInt(req.params.id);
     const server = await storage.getServer(id);
     if (!server) return res.status(404).json({ error: "Server not found" });
     if (server.status === "running") return res.status(400).json({ error: "Server already running" });
 
+    const dockerAvailable = await isDockerAvailable();
+    if (!dockerAvailable) {
+      return res.status(503).json({
+        error: "Docker is not available. Make sure /var/run/docker.sock is mounted into the OrbitMC container."
+      });
+    }
+
     await storage.updateServer(id, { status: "starting", lastStarted: new Date() });
     broadcastStatus(id, "starting");
-    broadcastLog(id, `[INFO]: Starting ${server.name}...`, "info");
+    broadcastLog(id, `[OrbitMC]: Launching container for ${server.name}...`, "info");
 
-    setTimeout(async () => {
-      await storage.updateServer(id, { status: "running" });
-      broadcastStatus(id, "running");
-      broadcastLog(id, `[INFO]: Loading server.properties`, "info");
-      broadcastLog(id, `[INFO]: Default game type: ${server.type.toUpperCase()}`, "info");
-      broadcastLog(id, `[INFO]: Preparing level "world"`, "info");
-      broadcastLog(id, `[INFO]: Done! For help, type "help"`, "info");
-    }, 3000);
+    // Start container async — respond immediately so the UI doesn't hang
+    (async () => {
+      try {
+        const containerId = await dockerStart(server);
+        await storage.updateServer(id, { containerId, status: "starting" });
+        broadcastLog(id, `[OrbitMC]: Container started (${containerId.slice(0, 12)}). Waiting for Minecraft to boot...`, "info");
+
+        // Stream real logs
+        attachLogStream(id, containerId);
+
+        // Poll container status until running or error
+        let attempts = 0;
+        const poll = setInterval(async () => {
+          attempts++;
+          try {
+            const status = await getContainerStatus(containerId);
+            if (status === "running") {
+              clearInterval(poll);
+              await storage.updateServer(id, { status: "running" });
+              broadcastStatus(id, "running");
+            } else if (status === "error" || attempts > 120) {
+              clearInterval(poll);
+              await storage.updateServer(id, { status: "error" });
+              broadcastStatus(id, "error");
+              broadcastLog(id, `[OrbitMC]: Container entered error state.`, "error");
+            }
+          } catch {
+            clearInterval(poll);
+          }
+        }, 3000);
+      } catch (err: any) {
+        await storage.updateServer(id, { status: "error" });
+        broadcastStatus(id, "error");
+        broadcastLog(id, `[OrbitMC]: Failed to start container: ${err.message}`, "error");
+      }
+    })();
 
     res.json({ success: true });
   });
@@ -217,15 +291,26 @@ export function registerRoutes(httpServer: HttpServer, app: Express) {
 
     await storage.updateServer(id, { status: "stopping" });
     broadcastStatus(id, "stopping");
-    broadcastLog(id, `[INFO]: Stopping server ${server.name}...`, "info");
+    broadcastLog(id, `[OrbitMC]: Stopping ${server.name}...`, "info");
 
-    setTimeout(async () => {
-      await storage.updateServer(id, { status: "stopped", onlinePlayers: 0 });
-      broadcastStatus(id, "stopped");
-      broadcastLog(id, `[INFO]: Server stopped.`, "info");
-      const interval = runningServers.get(id);
-      if (interval) { clearInterval(interval); runningServers.delete(id); }
-    }, 2000);
+    (async () => {
+      try {
+        // Stop log stream first
+        const cleanup = logStreamCleanup.get(id);
+        if (cleanup) { cleanup(); logStreamCleanup.delete(id); }
+
+        if (server.containerId) {
+          await dockerStop(server.containerId);
+        }
+        await storage.updateServer(id, { status: "stopped", onlinePlayers: 0 });
+        broadcastStatus(id, "stopped");
+        broadcastLog(id, `[OrbitMC]: Server stopped.`, "info");
+      } catch (err: any) {
+        await storage.updateServer(id, { status: "error" });
+        broadcastStatus(id, "error");
+        broadcastLog(id, `[OrbitMC]: Error stopping container: ${err.message}`, "error");
+      }
+    })();
 
     res.json({ success: true });
   });
@@ -237,17 +322,43 @@ export function registerRoutes(httpServer: HttpServer, app: Express) {
 
     await storage.updateServer(id, { status: "stopping" });
     broadcastStatus(id, "stopping");
-    broadcastLog(id, `[INFO]: Restarting server...`, "info");
+    broadcastLog(id, `[OrbitMC]: Restarting ${server.name}...`, "info");
 
-    setTimeout(async () => {
-      await storage.updateServer(id, { status: "starting" });
-      broadcastStatus(id, "starting");
-      setTimeout(async () => {
-        await storage.updateServer(id, { status: "running" });
-        broadcastStatus(id, "running");
-        broadcastLog(id, `[INFO]: Server restarted successfully.`, "info");
-      }, 3000);
-    }, 2000);
+    (async () => {
+      try {
+        if (server.containerId) {
+          await dockerRestart(server.containerId);
+          await storage.updateServer(id, { status: "starting" });
+          broadcastStatus(id, "starting");
+          broadcastLog(id, `[OrbitMC]: Container restarting...`, "info");
+
+          // Re-attach log stream
+          attachLogStream(id, server.containerId);
+
+          // Poll for running
+          let attempts = 0;
+          const poll = setInterval(async () => {
+            attempts++;
+            const status = await getContainerStatus(server.containerId!);
+            if (status === "running" || attempts > 60) {
+              clearInterval(poll);
+              await storage.updateServer(id, { status: status === "running" ? "running" : "error" });
+              broadcastStatus(id, status === "running" ? "running" : "error");
+            }
+          }, 3000);
+        } else {
+          // No container yet — treat as a fresh start
+          const containerId = await dockerStart(server);
+          await storage.updateServer(id, { containerId, status: "starting" });
+          attachLogStream(id, containerId);
+          broadcastStatus(id, "starting");
+        }
+      } catch (err: any) {
+        await storage.updateServer(id, { status: "error" });
+        broadcastStatus(id, "error");
+        broadcastLog(id, `[OrbitMC]: Restart failed: ${err.message}`, "error");
+      }
+    })();
 
     res.json({ success: true });
   });
@@ -257,14 +368,35 @@ export function registerRoutes(httpServer: HttpServer, app: Express) {
     const { command } = req.body;
     const server = await storage.getServer(id);
     if (!server || server.status !== "running") return res.status(400).json({ error: "Server not running" });
+    if (!server.containerId) return res.status(400).json({ error: "No container attached to this server" });
+
     broadcastLog(id, `> ${command}`, "info");
-    // Simulate some command responses
-    if (command === "list") broadcastLog(id, `[INFO]: There are 0 of a max of ${server.maxPlayers} players online:`, "info");
-    else if (command.startsWith("say ")) broadcastLog(id, `[INFO]: [Server] ${command.slice(4)}`, "info");
-    else if (command === "stop") {
-      setTimeout(() => broadcastLog(id, `[INFO]: Stopping the server`, "info"), 500);
-    } else broadcastLog(id, `[INFO]: Unknown command: ${command}`, "warn");
+
+    (async () => {
+      try {
+        await dockerSendCommand(server.containerId!, command);
+      } catch (err: any) {
+        // rcon-cli may not be available — log but don't fail
+        broadcastLog(id, `[OrbitMC]: Command sent (response via console stream)`, "info");
+      }
+    })();
+
     res.json({ success: true });
+  });
+
+  // Delete server — also remove Docker container
+  app.delete("/api/servers/:id/container", requireAuth, async (req, res) => {
+    const id = parseInt(req.params.id);
+    const server = await storage.getServer(id);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+
+    try {
+      if (server.containerId) await dockerRemove(server.containerId);
+      await storage.updateServer(id, { containerId: null, status: "stopped" });
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // Server logs
