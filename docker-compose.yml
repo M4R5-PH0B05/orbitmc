@@ -15,11 +15,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=8080
-      # Change this in production!
       - SESSION_SECRET=change-me-in-production-please
-    # Run as root so the node process can access the Docker socket.
-    # Alternatively: add the container user to the docker group on the host.
     user: root
+    security_opt:
+      - label=disable
     networks:
       - craftpanel_net
 
